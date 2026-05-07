@@ -1,0 +1,16 @@
+{
+  "name": "constraint-inference",
+  "version": "0.1.0",
+  "description": "Reverse-engineers constraint parameters from user override patterns",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.3.0"
+  }
+}
