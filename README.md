@@ -81,6 +81,31 @@ Part of the [constraint theory ecosystem](https://github.com/SuperInstance/const
 - **intent-inference** — Complementary: infers intent, this infers constraints
 - **flux-lucid** — Intent vectors and navigation
 
+## v0.2.0: Simulation-First Constraint Prediction
+
+Every constraint update is now a hypothesis. We predict its effect before applying it, then confirm against real override data.
+
+### New Files
+- `src/simulation_first.ts` — Prediction engine: predict effect → apply → observe → confirm/supersede
+- `src/types.ts` extended with `ConstraintPrediction`, `TileLifecycleState`, `LifecycleConstraintUpdate`
+- `src/plato_bridge.ts` extended with `writePredictionTile()`, `supersedePrediction()`, `getStats()`
+
+### Pattern: Predict → Apply → Confirm
+
+```
+1. User overrides detected → constraint pattern identified
+2. predictConstraintEffect() → file prediction tile to PLATO (t_minus_event)
+3. Apply constraint update
+4. Monitor override rate for 1 hour
+5. confirmPrediction() → compare actual vs predicted
+6. If confirmed → tile stays Active
+7. If mismatched → supersede with corrected value
+```
+
+### Key Insight
+
+Every user override is constraint signal. But the inferred update is a hypothesis, not a fact. Simulation-first treats it as a prediction and confirms against reality before committing.
+
 ## License
 
 MIT

@@ -1,6 +1,6 @@
 {
   "name": "constraint-inference",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reverse-engineers constraint parameters from user override patterns",
   "main": "src/index.js",
   "scripts": {

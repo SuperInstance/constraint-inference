@@ -63,3 +63,41 @@ export const DEFAULT_MODEL: MutableConstraintModel = {
   zhc_tolerance: 0.001,
   action_confidence_min: 0.7,
 };
+
+/**
+ * Simulation-first: predicted effect of a constraint update.
+ * Filed BEFORE the update is applied. Confirmed AFTER seeing real overrides.
+ */
+export interface ConstraintPrediction {
+  constraint_id: string;
+  current_value: number;
+  predicted_value: number;
+  expected_direction: 'tighten' | 'loosen';
+  expected_override_reduction_pct: number; // How much we expect overrides to decrease
+  confidence: number;
+  t_minus_event: string; // e.g., "T-1h: waiting for override data"
+  lamport: number;
+  confirmed: boolean;
+  actual_override_reduction_pct?: number;
+}
+
+/**
+ * Tile lifecycle states — mirrors PLATO v3
+ */
+export type TileLifecycleState = 'active' | 'superseded' | 'retracted';
+
+/**
+ * Lifecycle-aware constraint update tile
+ */
+export interface LifecycleConstraintUpdate {
+  constraint_id: string;
+  previous_value: number;
+  new_value: number;
+  direction: 'tighten' | 'loosen';
+  confidence: number;
+  state: TileLifecycleState;
+  lamport: number;
+  timestamp: number;
+  superseded_by?: string; // ID of newer update that replaced this
+  retraction_reason?: string;
+}

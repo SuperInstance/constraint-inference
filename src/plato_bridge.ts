@@ -195,6 +195,68 @@ export async function writeConstraintUpdate(
 }
 
 /**
+ * Write a simulation-first prediction tile to PLATO (v2).
+ * Predictions carry t_minus_event for simulation-first coordination.
+ */
+export async function writePredictionTile(
+  prediction: import('./types').ConstraintPrediction
+): Promise<void> {
+  try {
+    const tile = {
+      domain: 'constraint_predictions',
+      question: `prediction:${prediction.constraint_id} expected_reduction:${prediction.expected_override_reduction_pct}% confidence:${prediction.confidence}`,
+      answer: JSON.stringify(prediction),
+      confidence: prediction.confidence,
+      source: 'constraint-inference-v2',
+      t_minus_event: prediction.t_minus_event,
+      lamport_clock: prediction.lamport,
+    };
+    
+    await httpPost('/submit', { room: 'constraint_predictions', ...tile });
+    console.log(`[plato_bridge] Wrote prediction tile: ${prediction.constraint_id} L${prediction.lamport}`);
+  } catch (err) {
+    console.warn('[plato_bridge] Failed to write prediction:', err);
+  }
+}
+
+/**
+ * Supersede a prediction with a confirmed result (v3 lifecycle).
+ */
+export async function supersedePrediction(
+  oldLamport: number,
+  confirmedPrediction: import('./types').ConstraintPrediction
+): Promise<void> {
+  try {
+    await httpPost('/supersede', {
+      room: 'constraint_predictions',
+      old_lamport: oldLamport,
+      new_tile: {
+        domain: 'constraint_predictions',
+        question: `confirmed:${confirmedPrediction.constraint_id} actual_reduction:${confirmedPrediction.actual_override_reduction_pct}%`,
+        answer: JSON.stringify(confirmedPrediction),
+        confidence: confirmedPrediction.confidence,
+        source: 'constraint-inference-v2',
+      },
+    });
+    console.log(`[plato_bridge] Superseded prediction L${oldLamport}`);
+  } catch (err) {
+    console.warn('[plato_bridge] Failed to supersede prediction:', err);
+  }
+}
+
+/**
+ * Get server stats (v3 endpoint).
+ */
+export async function getStats(): Promise<Record<string, number> | null> {
+  try {
+    const response = await httpGet('/stats');
+    return JSON.parse(response);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Get the current constraint model from PLATO (if available)
  */
 export async function readConstraintModel(): Promise<MutableConstraintModel | null> {
