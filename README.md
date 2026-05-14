@@ -1,3 +1,11 @@
+# constraint-inference — ARCHIVED
+
+> **This repository is no longer actively maintained.**
+> Superseded by: **[github.com/SuperInstance/forgemaster](https://github.com/SuperInstance/forgemaster)**
+> Reason: Constraint theory work merged into Forgemaster's FLUX runtime
+
+---
+
 # constraint-inference
 
 [![CI](https://github.com/SuperInstance/constraint-inference/actions/workflows/ci.yml/badge.svg)](https://github.com/SuperInstance/constraint-inference/actions/workflows/ci.yml)
