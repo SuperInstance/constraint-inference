@@ -184,6 +184,15 @@ src/
 └── simulation_first.ts     # Predict-apply-observe-confirm cycle
 ```
 
+## Related Repos
+
+| Repo | Purpose |
+|------|--------|
+| [`fleet-health-monitor`](https://github.com/SuperInstance/fleet-health-monitor) | Fleet control plane — runs the PLATO server this bridges to |
+| [`plato-types`](https://github.com/SuperInstance/plato-types) | Core types — LamportClock, TileLifecycle, content_hash |
+| [`agent-field`](https://github.com/SuperInstance/agent-field) | Agent room coordination with coupling and gap detection |
+| [`captains-log`](https://github.com/SuperInstance/captains-log) | Oracle1's growth diary — includes constraint theory research |
+
 ## License
 
 MIT
