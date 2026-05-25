@@ -1,118 +1,188 @@
-# constraint-inference — ARCHIVED
-
-> **This repository is no longer actively maintained.**
-> Superseded by: **[github.com/SuperInstance/forgemaster](https://github.com/SuperInstance/forgemaster)**
-> Reason: Constraint theory work merged into Forgemaster's FLUX runtime
-
----
-
 # constraint-inference
 
-[![CI](https://github.com/SuperInstance/constraint-inference/actions/workflows/ci.yml/badge.svg)](https://github.com/SuperInstance/constraint-inference/actions/workflows/ci.yml)
+Reverse-engineers constraint parameters from user override behavior. When users override captain decisions, this service infers which constraint boundary was wrong and adjusts it.
 
-**Reverse-engineers constraint parameters from user override patterns.**
+TypeScript service on port 9439. Polls PLATO for override events, detects patterns, updates the constraint model, and signals the captain to re-deliberate.
 
-When a captain agent makes a decision (EMERGENCE, STABLE, CONSTRAINED, DECIDED) and the user overrides it, that override contains information about where the constraint boundary *actually* is. This service extracts that information.
-
-## The Core Insight
-
-Every user override is a constraint signal. When the captain says "EMERGENCE" and the user says "STABLE", the user is telling us the emergence threshold was too sensitive. This service maps that delta to a constraint parameter update.
+## How It Works
 
 ```
-Captain says: EMERGENCE
-User says:    STABLE
-→ User thinks emergence was too sensitive → tighten threshold
-
-Captain says: STABLE  
-User says:    CONSTRAINED
-→ User thinks safety margin too tight → loosen margin
+Captain decides EMERGENCE → User overrides to STABLE
+                         ↓
+         OverrideEvent recorded in PLATO
+                         ↓
+         constraint-inference polls PLATO (:8847)
+                         ↓
+         Maps decision delta → constraint parameter
+                         ↓
+         Accumulates patterns (rolling window of 20)
+                         ↓
+         When confidence ≥ 0.75 and samples ≥ 3:
+           1. Predict effect (simulation-first)
+           2. Update model parameter
+           3. Save to disk + PLATO
+           4. Signal captain re-deliberation
 ```
 
-## Architecture
+## Install & Run
 
-```
-src/
-├── types.ts              — FleetGraph, DecisionDelta, OverrideEvent
-├── override_tracker.ts   — Logs override events with fleet context
-├── constraint_inferrer.ts — Maps deltas to constraint updates
-├── constraint_model.ts   — Constraint parameter model
-├── re_deliberate.ts      — Re-deliberation: should we revisit a decision?
-├── plato_bridge.ts       — Push inferred constraints to PLATO
-└── index.ts              — Main loop (1-minute poll)
+```bash
+npm install
+npx ts-node src/index.ts
 ```
 
-### Decision Ordering
+Environment variables:
 
-Decisions are ordered from most constrained to most permissive:
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PLATO_HOST` | `localhost` | PLATO server host |
+| `PLATO_PORT` | `8847` | PLATO server port |
+
+## API (port 9439)
+
+### POST /override — Inject an override event
+
+```bash
+curl -X POST localhost:9439/override \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "user_id": "casey",
+    "graph": {"V": 6, "E": 14, "C": 1},
+    "original_decision": "EMERGENCE",
+    "user_decision": "STABLE",
+    "reason": "this looks stable to me"
+  }'
+```
+
+Response:
+
+```json
+{
+  "status": "recorded",
+  "patterns_found": 1,
+  "significant": true
+}
+```
+
+### GET /model — Current constraint model
+
+```json
+{
+  "emergence_beta_threshold": -2,
+  "safety_margin": 0.15,
+  "trust_min": 0.5,
+  "trust_max": 0.95,
+  "zhc_tolerance": 0.001,
+  "action_confidence_min": 0.7
+}
+```
+
+### GET /patterns — Detected patterns
+
+Returns all patterns (not just significant ones).
+
+### GET /health — Health check
+
+## Decision Mapping
+
+Four captain decisions, ordered from most to least constrained:
 
 ```
 CONSTRAINED → STABLE → DECIDED → EMERGENCE
 ```
 
-When the user picks a more constrained decision than the captain, they're tightening. When they pick less constrained, they're loosening.
+When a user overrides, the direction of the override maps to a specific constraint:
 
-### Override Patterns
+| Captain Decision | User Override | Inference | Constraint Updated |
+|-----------------|---------------|-----------|-------------------|
+| EMERGENCE | STABLE | Emergence too sensitive | `emergence_beta_threshold` |
+| STABLE | CONSTRAINED | Safety margin too loose | `safety_margin` |
+| DECIDED | STABLE | Action threshold too low | `action_confidence_min` |
+| EMERGENCE | CONSTRAINED | Multiple constraints wrong | `emergence_beta_threshold` |
+| CONSTRAINED | STABLE | Safety too tight | `safety_margin` |
+| CONSTRAINED | DECIDED | Safety too tight | `safety_margin` |
+| DECIDED | EMERGENCE | Emergence not sensitive enough | `emergence_beta_threshold` |
+| STABLE | DECIDED | Action threshold too high | `action_confidence_min` |
 
-The system detects patterns in overrides:
-- **Frequency**: How often the user overrides a particular constraint
-- **Direction**: Consistently tightening or loosening
-- **Context**: Which fleet graph states trigger overrides
+User chose *more constrained* than captain → **tighten**. User chose *less constrained* → **loosen**.
 
-These patterns crystallize into constraint parameter updates that feed back into the captain's decision model.
+## Constraint Model Parameters
 
-### PLATO Bridge
+| Parameter | Default | Range | Delta per update |
+|-----------|---------|-------|-----------------|
+| `emergence_beta_threshold` | -2 | unbounded | ±0.07 |
+| `safety_margin` | 0.15 | [0, 1] | ±0.05 |
+| `trust_min` | 0.5 | [0, 1] | ±0.05 |
+| `trust_max` | 0.95 | [0, 1] | ±0.05 |
+| `zhc_tolerance` | 0.001 | ≥ 0 | ±0.0001 |
+| `action_confidence_min` | 0.7 | [0, 1] | ±0.05 |
 
-Inferred constraints are pushed to PLATO rooms so other fleet agents can learn from the user's corrections. The system becomes more aligned over time without explicit configuration.
+Model is persisted to `~/.config/constraint-inference/model.json`.
 
-## Usage
+## Pattern Detection
 
-```bash
-npm install
-npm start
+Override events go into a rolling window (default: 20 events). The `inferConstraints` function:
+
+1. Maps each event to a `(constraint_id, direction)` pair
+2. Groups by `(constraint_id, direction)`
+3. Computes confidence: `min(0.95, 0.4 + sample_size × 0.2)`
+
+A pattern is **significant** when:
+- `confidence ≥ 0.75` (requires ≥ 2 samples)
+- `sample_size ≥ 3`
+
+## Simulation-First Predictions
+
+Before applying an update, a prediction tile is filed to PLATO:
+
+```typescript
+{
+  constraint_id: "emergence_beta_threshold",
+  current_value: -2,
+  predicted_value: -1.93,
+  expected_direction: "tighten",
+  expected_override_reduction_pct: 25,  // tightening → ~25% reduction
+  confidence: 0.8,
+  lamport: 42
+}
 ```
 
-The service polls every 60 seconds for new override events, runs inference, and pushes updates to PLATO.
+After enough real override data accumulates, the prediction is confirmed or superseded via PLATO's lifecycle (`active` → `superseded`). Lamport clocks provide causal ordering.
 
-## Why This Matters
+## PLATO Integration
 
-Most constraint systems have static thresholds. This one *learns* from the user. Every override makes the system smarter. The constraint boundaries converge to match the user's actual preferences.
+Reads from:
+- `GET /room/captain_overrides_history` — historical override events
 
-This is a form of **inverse reinforcement learning** — but instead of learning a reward function, we're learning constraint boundaries directly from human corrections.
+Writes to:
+- `POST /room/constraint_updates` — constraint parameter changes
+- `POST /submit` room `constraint_predictions` — simulation-first predictions
+- `POST /room/captain_signals` — re-deliberation signals
 
-## Ecosystem
+## Example: End-to-End Flow
 
-Part of the [constraint theory ecosystem](https://github.com/SuperInstance/constraint-theory-ecosystem):
+1. User overrides captain's EMERGENCE decision to STABLE
+2. Override recorded: `{original: EMERGENCE, user: STABLE, graph: {V:6,E:14,C:1}}`
+3. Inference maps: EMERGENCE→STABLE = tighten `emergence_beta_threshold`
+4. 3 more similar overrides arrive → confidence reaches 0.8
+5. Prediction filed: "tightening emergence_beta_threshold by 0.07, expect 25% fewer overrides"
+6. Model updated: `emergence_beta_threshold` from -2.0 to -2.07
+7. Captain signaled to re-deliberate with new threshold
+8. After observation period, prediction confirmed if override rate dropped
 
-- **constraint-theory-core** — Rust constraint math library
-- **dodecet-encoder** — 12-bit constraint state encoding
-- **holonomy-consensus** — Fleet consensus protocol
-- **intent-inference** — Complementary: infers intent, this infers constraints
-- **flux-lucid** — Intent vectors and navigation
-
-## v0.2.0: Simulation-First Constraint Prediction
-
-Every constraint update is now a hypothesis. We predict its effect before applying it, then confirm against real override data.
-
-### New Files
-- `src/simulation_first.ts` — Prediction engine: predict effect → apply → observe → confirm/supersede
-- `src/types.ts` extended with `ConstraintPrediction`, `TileLifecycleState`, `LifecycleConstraintUpdate`
-- `src/plato_bridge.ts` extended with `writePredictionTile()`, `supersedePrediction()`, `getStats()`
-
-### Pattern: Predict → Apply → Confirm
+## Project Structure
 
 ```
-1. User overrides detected → constraint pattern identified
-2. predictConstraintEffect() → file prediction tile to PLATO (t_minus_event)
-3. Apply constraint update
-4. Monitor override rate for 1 hour
-5. confirmPrediction() → compare actual vs predicted
-6. If confirmed → tile stays Active
-7. If mismatched → supersede with corrected value
+src/
+├── index.ts                # Main loop + HTTP API (port 9439)
+├── types.ts                # Interfaces: OverrideEvent, OverridePattern, MutableConstraintModel
+├── constraint_inferrer.ts  # Core inference: map deltas → constraints
+├── constraint_model.ts     # Load/save/update model from disk
+├── override_tracker.ts     # Rolling window of events, pattern analysis
+├── plato_bridge.ts         # Read/write PLATO tiles
+├── re_deliberate.ts        # Signal captain to re-run with updated constraints
+└── simulation_first.ts     # Predict-apply-observe-confirm cycle
 ```
-
-### Key Insight
-
-Every user override is constraint signal. But the inferred update is a hypothesis, not a fact. Simulation-first treats it as a prediction and confirms against reality before committing.
 
 ## License
 
